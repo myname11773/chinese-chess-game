@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>中国象棋 - 人机对战</title>
+  <link rel="stylesheet" href="css/style.css?v=8">
+</head>
+<body>
+  <!-- 背景音乐（Web Audio API 合成，无需外部文件） -->
+
+  <div class="app">
+    <!-- 左侧面板：游戏信息 -->
+    <div class="side-panel left-panel">
+      <h1 class="game-title">中国象棋</h1>
+      <div class="turn-indicator" id="turnIndicator">
+        <div class="turn-dot red active"></div>
+        <span id="turnText">红方走棋</span>
+      </div>
+      <div class="status-message" id="statusMessage"></div>
+
+      <!-- AI 设置 -->
+      <div class="ai-panel">
+        <label class="ai-toggle-label">
+          <input type="checkbox" id="aiToggle" checked>
+          <span id="aiToggleText">电脑对战</span>
+        </label>
+        <div class="side-info" id="sideInfo">
+          <span class="difficulty-label">AI执：</span>
+          <span id="playerSideLabel">红方</span>
+        </div>
+        <div class="ai-thinking" id="aiThinking" style="display:none;">
+          <span class="thinking-dot"></span>
+          <span class="thinking-dot"></span>
+          <span class="thinking-dot"></span>
+          <span id="thinkingText">电脑思考中</span>
+        </div>
+        <label class="ai-toggle-label bgm-toggle-label">
+          <input type="checkbox" id="bgmToggle" checked>
+          <span id="bgmToggleText">背景音乐</span>
+        </label>
+      </div>
+
+      <div class="controls">
+        <button class="btn btn-primary" id="resetBtn">重新开始</button>
+        <button class="btn btn-secondary" id="undoBtn">悔棋</button>
+        <button class="btn btn-secondary" id="rotateBtn">旋转棋盘</button>
+      </div>
+      <div class="captured-pieces">
+        <div class="captured-row">
+          <span class="captured-label">红方俘获：</span>
+          <div class="captured-list" id="capturedByRed"></div>
+        </div>
+        <div class="captured-row">
+          <span class="captured-label">黑方俘获：</span>
+          <div class="captured-list" id="capturedByBlack"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中央：棋盘 -->
+    <div class="board-wrapper">
+      <div class="board-container" id="boardContainer">
+        <img class="board-bg" src="images/bg.png" alt="棋盘" id="boardBg"
+             onerror="this.style.display='none'; document.getElementById('boardCanvas').style.display='block'; drawBoard();">
+        <canvas class="board-canvas" id="boardCanvas"></canvas>
+        <div class="pieces-layer" id="piecesLayer"></div>
+        <div class="moves-layer" id="movesLayer"></div>
+        <div class="click-layer" id="clickLayer"></div>
+      </div>
+    </div>
+
+    <!-- 右侧面板：棋谱 -->
+    <div class="side-panel right-panel">
+      <h2 class="panel-title">棋谱记录</h2>
+      <div class="move-history" id="moveHistory">
+        <div class="empty-history">暂无走棋记录</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 选边弹窗 -->
+  <div class="modal-overlay show" id="sideSelectModal">
+    <div class="modal-content">
+      <h2 class="modal-title">选择AI执棋方</h2>
+      <p class="modal-text">AI 执该方自动走棋，你操作对方</p>
+      <div class="side-select-buttons">
+        <button class="btn btn-side btn-red" id="selectRedBtn">AI执红方（先手）</button>
+        <button class="btn btn-side btn-black" id="selectBlackBtn">AI执黑方（后手）</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游戏结束弹窗 -->
+  <div class="modal-overlay" id="gameOverModal">
+    <div class="modal-content">
+      <h2 class="modal-title" id="gameOverTitle">游戏结束</h2>
+      <p class="modal-text" id="gameOverText"></p>
+      <button class="btn btn-primary" id="modalResetBtn">再来一局</button>
+    </div>
+  </div>
+
+  <script src="js/game.js?v=9"></script>
+  <script>
+    // 注册 Service Worker，缓存引擎文件加速二次访问
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(function(e) {
+        console.warn('Service Worker 注册失败:', e);
+      });
+    }
+  </script>
+</body>
+</html>
