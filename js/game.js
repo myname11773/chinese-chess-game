@@ -1090,15 +1090,15 @@ function initPikafish() {
     return;
   }
 
-  // 超时检测：60 秒未就绪则标记为后备模式（pikafish.data 有49MB，加载需要时间）
+  // 超时检测：180 秒未就绪则标记为后备模式（pikafish.data 有49MB，GitHub Pages 上下载较慢）
   let initTimeout = setTimeout(function() {
     if (!pikafishReady && pikafishInitializing) {
-      console.warn('Pikafish 引擎加载超时（60秒），切换到内置 AI');
+      console.warn('Pikafish 引擎加载超时（180秒），切换到内置 AI');
       pikafishInitializing = false;
       updateEngineStatus('builtin');
       // 不终止 worker，让它继续在后台加载
     }
-  }, 60000);
+  }, 180000);
 
   pikafishWorker.onmessage = function(e) {
     const msg = e.data;
@@ -1266,7 +1266,7 @@ function updateEngineStatus(status) {
     dot.style.boxShadow = '0 0 8px #FF9800';
     dot.style.animation = '';
   } else if (status === 'loading') {
-    textEl.textContent = 'Pikafish 引擎加载中... (约50MB，请稍候)';
+    textEl.textContent = 'Pikafish 引擎加载中... (约50MB，首次加载需1-3分钟，请耐心等待)';
     el2.style.background = 'rgba(136, 136, 136, 0.2)';
     el2.style.color = '#aaa';
     el2.style.borderColor = 'rgba(136, 136, 136, 0.4)';
