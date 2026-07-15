@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>中国象棋 - 人机对战</title>
-  <link rel="stylesheet" href="css/style.css?v=17">
+  <link rel="stylesheet" href="css/style.css?v=18">
 </head>
 <body>
   <!-- 背景音乐（Web Audio API 合成，无需外部文件） -->
@@ -63,9 +63,7 @@
     <!-- 中央：棋盘 -->
     <div class="board-wrapper">
       <div class="board-container" id="boardContainer">
-        <img class="board-bg" src="images/bg.png" alt="棋盘" id="boardBg"
-             onerror="this.style.display='none'; document.getElementById('boardCanvas').style.display='block'; drawBoard();">
-        <canvas class="board-canvas" id="boardCanvas" style="display:none;"></canvas>
+        <canvas class="board-canvas" id="boardCanvas"></canvas>
         <div class="pieces-layer" id="piecesLayer"></div>
         <div class="moves-layer" id="movesLayer"></div>
         <div class="click-layer" id="clickLayer"></div>
@@ -95,7 +93,7 @@
     </div>
   </div>
 
-  <script src="js/game.js?v=27"></script>
+  <script src="js/game.js?v=28"></script>
   <script>
     // 注册 Service Worker，缓存引擎文件加速二次访问
     if ('serviceWorker' in navigator) {

@@ -11,11 +11,12 @@ const CONFIG = {
   board: {
     cols: 9,
     rows: 10,
-    // bg.png 已加对称边距(30px)，网格居中，棋子完全在背景图内
-    marginLeftPercent: 5.5,
-    marginTopPercent: 5.0,
-    cellWPercent: 11.116,
-    cellHPercent: 9.998,
+    // Canvas绘制：9:10容器比例，方格为正方形，边距=半个方格
+    // 8格宽+左右各半格边距=9格宽, 9格高+上下各半格边距=10格高
+    marginLeftPercent: 5.7,
+    marginTopPercent: 5.3,
+    cellWPercent: 11.111,
+    cellHPercent: 10.0,
   },
   audio: {
     click:    'audio/click.wav',
