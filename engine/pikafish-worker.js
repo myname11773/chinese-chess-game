@@ -76,8 +76,8 @@ const DIFFICULTY_SETTINGS = {
   5: { depth: 22, movetime: 8000 },
 };
 
-// 满血版Pikafish：适合移动端的深度，保证几秒内返回
-const MAX_STRENGTH = { depth: 15, movetime: 5000 };
+// 满血版Pikafish：适中深度，保证1-3秒内返回
+const MAX_STRENGTH = { depth: 10, movetime: 2000 };
 
 let initialized = false;
 
@@ -140,7 +140,7 @@ self.addEventListener('message', function(e) {
           ['string', 'string'], [fen, '']);
 
         if (ret !== 0) {
-          self.postMessage({ type: 'error', message: 'Invalid position: ' + fen });
+          self.postMessage({ type: 'error', message: 'Invalid position: ' + fen, searchId: msg.searchId });
           return;
         }
 
@@ -156,15 +156,14 @@ self.addEventListener('message', function(e) {
             doSearch(Math.floor(depth / 2), movetime);
             return;
           }
-          self.postMessage({ type: 'error', message: '搜索返回空结果' });
+          self.postMessage({ type: 'error', message: '搜索返回空结果', searchId: msg.searchId });
           return;
         }
 
-      // 防重复将军检测
+      // 防重复将军：记录走法，但不再额外搜索（避免变慢）
       const isCheck = bestmove.includes('+');
       const moveKey = bestmove.replace(/[+#]/g, '');
 
-      // 记录走法
       recentMoves.push(moveKey);
       if (recentMoves.length > 10) recentMoves.shift();
 
@@ -174,24 +173,8 @@ self.addEventListener('message', function(e) {
         consecutiveChecks = 0;
       }
 
-      // 规则1：连续将军超过5次，尝试用 "go" 搜索非将军走法
-      // 规则2：同一走法重复3次以上，重新搜索排除该走法
-      const moveCounts = {};
-      recentMoves.forEach(m => { moveCounts[m] = (moveCounts[m] || 0) + 1; });
-
-      if (consecutiveChecks >= 5 || (moveCounts[moveKey] || 0) >= 3) {
-        // 重新搜索，使用相同深度但更长时间
-        const altBestmove = Module.ccall('js_search', 'string',
-          ['number', 'number'], [depth, movetime * 2]);
-
-        if (altBestmove && altBestmove !== '(none)' && altBestmove !== bestmove) {
-          bestmove = altBestmove;
-          consecutiveChecks = 0;
-        }
-      }
-
       const move = parseBestmove(bestmove);
-      self.postMessage({ type: 'bestmove', move: move, bestmove: bestmove, engine: 'pikafish' });
+      self.postMessage({ type: 'bestmove', move: move, bestmove: bestmove, engine: 'pikafish', searchId: msg.searchId });
       } catch (err) {
         // 搜索崩溃，尝试降低深度重试
         self.postMessage({ type: 'debug', msg: '搜索崩溃: ' + String(err.message || err) + '，尝试降低深度重试' });
@@ -199,10 +182,10 @@ self.addEventListener('message', function(e) {
           try {
             doSearch(Math.floor(depth / 2), movetime);
           } catch (err2) {
-            self.postMessage({ type: 'error', message: '重试也失败: ' + String(err2.message || err2) });
+            self.postMessage({ type: 'error', message: '重试也失败: ' + String(err2.message || err2), searchId: msg.searchId });
           }
         } else {
-          self.postMessage({ type: 'error', message: String(err.message || err) });
+          self.postMessage({ type: 'error', message: String(err.message || err), searchId: msg.searchId });
         }
       }
     }

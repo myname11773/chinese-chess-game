@@ -11,11 +11,11 @@ const CONFIG = {
   board: {
     cols: 9,
     rows: 10,
-    // 精确测量自 bg.png 中网格线的位置
-    marginLeftPercent: 4.04,    // 第一条竖线
-    marginTopPercent: 3.97,     // 第一条横线
-    cellWPercent: 11.156,       // 竖线间距 (93.29-4.04)/8
-    cellHPercent: 10.092,        // 横线间距 (94.80-3.97)/9
+    // bg.png 已加对称边距(30px)，网格居中，棋子完全在背景图内
+    marginLeftPercent: 5.5,
+    marginTopPercent: 5.0,
+    cellWPercent: 11.116,
+    cellHPercent: 9.998,
   },
   audio: {
     click:    'audio/click.wav',
@@ -185,9 +185,9 @@ const POSITION_TABLES = {
 let game = {
   board: [],
   currentPlayer: 'red',
-  playerColor: 'red',   // 玩家选择的方（= AI执棋方）
-  aiColor: 'black',     // AI 执棋颜色（= playerColor）
-  humanColor: 'black',  // 玩家实际操作的棋色（与playerColor相反）
+  aiRed: false,         // AI 控制红方
+  aiBlack: false,       // AI 控制黑方
+  aiDifficulty: 5, // 固定最高难度，直接与引擎对弈
   boardFlipped: false,  // 棋盘是否旋转180度（独立于执棋方）
   selectedPos: null,
   validMoves: [],
@@ -199,12 +199,128 @@ let game = {
   checkedColor: null,
   lastMove: null,
   boardSnapshots: [],
-  aiEnabled: true,
-  aiDifficulty: 5, // 固定最高难度，直接与引擎对弈
   aiThinking: false,
   moveAnimating: false, // 棋子移动动画进行中，阻止操作
   aiMoveHistory: [],
+  sessionId: 0,  // 棋局标识，每次 initGame 递增，用于废弃过期回调
+  positionHistory: [],  // 长将检测：记录每次走棋后的局面哈希
 };
+
+// === 长将检测 ===
+// 将棋盘序列化为哈希字符串
+function boardHash(board, currentPlayer) {
+  let s = currentPlayer + '|';
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 9; c++) {
+      s += (board[r][c] || '.') + ',';
+    }
+  }
+  return s;
+}
+
+// 记录局面到历史
+function recordPosition(wasCheck, moverColor) {
+  const hash = boardHash(game.board, game.currentPlayer);
+  game.positionHistory.push({ hash, wasCheck, moverColor });
+}
+
+// 检测走某步后是否会造成长将（同一局面出现3次且都是将军）
+// 返回 true 表示这是第3次重复将军，必须变招
+function wouldBePerpetualCheck(board, currentPlayer, moverColor, move) {
+  // 模拟走棋
+  const sim = cloneBoard(board);
+  const code = sim[move.fromRow][move.fromCol];
+  sim[move.toRow][move.toCol] = code;
+  sim[move.fromRow][move.fromCol] = null;
+  const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+
+  // 检查这步是否将军
+  const isCheck = isInCheck(nextPlayer, sim);
+  if (!isCheck) return false;  // 不是将军，不是长将
+
+  // 计算走棋后的局面哈希
+  const hash = boardHash(sim, nextPlayer);
+
+  // 统计该局面在历史中出现的次数（且当时也是将军，且将军方相同）
+  let count = 0;
+  for (const entry of game.positionHistory) {
+    if (entry.hash === hash && entry.wasCheck && entry.moverColor === moverColor) {
+      count++;
+    }
+  }
+  // 如果已经有2次，这次就是第3次 → 长将
+  return count >= 2;
+}
+
+// 找一个不造成长将的替代走法
+function findNonPerpetualMove(moverColor) {
+  const allMoves = [];
+  // 收集所有合法走法
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 9; c++) {
+      const code = game.board[r][c];
+      if (!code || PIECE_INFO[code].color !== moverColor) continue;
+      const moves = getValidMoves(r, c, game.board);
+      for (const m of moves) {
+        allMoves.push({ fromRow: r, fromCol: c, toRow: m.row, toCol: m.col });
+      }
+    }
+  }
+
+  // 过滤掉会造成长将的走法
+  const validMoves = [];
+  for (const m of allMoves) {
+    if (!wouldBePerpetualCheck(game.board, game.currentPlayer, moverColor, m)) {
+      validMoves.push(m);
+    }
+  }
+
+  if (validMoves.length === 0) {
+    // 所有走法都会长将，退而求其次：选一个不是将军的走法
+    const nonCheckMoves = allMoves.filter(m => {
+      const sim = cloneBoard(game.board);
+      const code = sim[m.fromRow][m.fromCol];
+      sim[m.toRow][m.toCol] = code;
+      sim[m.fromRow][m.fromCol] = null;
+      const nextPlayer = game.currentPlayer === 'red' ? 'black' : 'red';
+      return !isInCheck(nextPlayer, sim);
+    });
+    if (nonCheckMoves.length > 0) {
+      // 用内置评估函数选最好的
+      return pickBestMove(nonCheckMoves, moverColor);
+    }
+    // 实在没有非将军走法，随便选一个
+    return allMoves[0] || null;
+  }
+
+  // 用内置评估函数选最好的
+  return pickBestMove(validMoves, moverColor);
+}
+
+// 从候选走法中用内置评估函数选最优
+function pickBestMove(moves, moverColor) {
+  let bestScore = -Infinity;
+  let bestMove = moves[0];
+  for (const m of moves) {
+    const sim = cloneBoard(game.board);
+    const code = sim[m.fromRow][m.fromCol];
+    sim[m.toRow][m.toCol] = code;
+    sim[m.fromRow][m.fromCol] = null;
+    const nb = boardToNumeric(sim);
+    const score = evaluate(nb);
+    const sign = moverColor === 'black' ? 1 : -1;
+    if (score * sign > bestScore) {
+      bestScore = score * sign;
+      bestMove = m;
+    }
+  }
+  return bestMove;
+}
+
+// 判断某方是否由AI控制
+function isAIControlled(color) {
+  return (color === 'red' && game.aiRed) || (color === 'black' && game.aiBlack);
+}
 
 let el = {};
 
@@ -734,7 +850,8 @@ function canCaptureKing(nb, color) {
 
 // --- 评估函数：子力价值 + 位置分 + 将军威胁 ---
 function evaluate(nb) {
-  const aiSign = game.aiColor === 'black' ? 1 : -1;
+  const aiColor = game.currentPlayer;
+  const aiSign = aiColor === 'black' ? 1 : -1;
   let score = 0;
   let aiKingExists = false, playerKingExists = false;
 
@@ -768,8 +885,9 @@ function evaluate(nb) {
   if (!playerKingExists) return 100000;
 
   // 将军威胁
-  if (canCaptureKing(nb, game.humanColor)) score += 300;
-  if (canCaptureKing(nb, game.aiColor)) score -= 300;
+  const enemyColor = aiColor === 'black' ? 'red' : 'black';
+  if (canCaptureKing(nb, enemyColor)) score += 300;
+  if (canCaptureKing(nb, aiColor)) score -= 300;
 
   return score;
 }
@@ -792,7 +910,7 @@ function sortMoves(moves, nb) {
 // --- 静止期搜索（只搜索吃子走法，避免地平线效应） ---
 function quiescence(nb, alpha, beta, color) {
   const rawEval = evaluate(nb);
-  const standPat = color === game.aiColor ? rawEval : -rawEval;
+  const standPat = color === game.currentPlayer ? rawEval : -rawEval;
   if (standPat >= beta) return beta;
   if (alpha < standPat) alpha = standPat;
 
@@ -967,7 +1085,7 @@ function getAIMove() {
   if (!zobristKeys) initZobrist();
 
   const nb = boardToNumeric(game.board);
-  const aiColor = game.aiColor;
+  const aiColor = game.currentPlayer;
   const enemyColor = aiColor === 'black' ? 'red' : 'black';
 
   // 难度配置
@@ -1067,6 +1185,7 @@ let pikafishWorker = null;
 let pikafishReady = false;
 let pikafishInitializing = false;
 let searchTimeoutId = null;
+let currentSearchId = 0;  // 搜索ID，防止AI走两步
 
 function initPikafish() {
   if (pikafishInitializing) return;
@@ -1109,7 +1228,7 @@ function initPikafish() {
       console.log('Pikafish 引擎已就绪');
       updateEngineStatus('pikafish');
       // 如果等待中则触发 AI
-      if (game.aiThinking && game.currentPlayer === game.aiColor) {
+      if (game.aiThinking && isAIControlled(game.currentPlayer)) {
         // 引擎刚就绪，重新触发
         doPikafishSearch();
       }
@@ -1129,8 +1248,11 @@ function initPikafish() {
         searchTimeoutId = null;
       }
       console.warn('Pikafish 搜索错误:', msg.message);
-      // 不永久关闭引擎，只对当前这步降级到内置AI
-      // pikafishReady 保持 true，下一步继续尝试 Pikafish
+      // 检查 searchId，防止过期的错误触发回退
+      if (msg.searchId !== undefined && msg.searchId !== currentSearchId) {
+        console.log('过期的错误消息，忽略');
+        return;
+      }
       if (game.aiThinking) {
         fallbackToBuiltinAI();
       }
@@ -1161,14 +1283,15 @@ function doPikafishSearch() {
   if (!pikafishReady || !pikafishWorker) {
     // 引擎还没准备好，先等一下
     if (pikafishInitializing) {
-      // 正在初始化，设置30秒超时后回退到内置AI
+      // 正在初始化，设置15秒超时后回退到内置AI
       if (searchTimeoutId) clearTimeout(searchTimeoutId);
+      const mySearchId = ++currentSearchId;
       searchTimeoutId = setTimeout(function() {
-        if (game.aiThinking && !pikafishReady) {
-          console.warn('引擎初始化中超时（30秒），本步用内置 AI');
+        if (game.aiThinking && !pikafishReady && mySearchId === currentSearchId) {
+          console.warn('引擎初始化中超时（15秒），本步用内置 AI');
           fallbackToBuiltinAI();
         }
-      }, 30000);
+      }, 15000);
       return;
     }
     // 尝试初始化
@@ -1180,43 +1303,79 @@ function doPikafishSearch() {
     }
   }
 
-  // 设置搜索超时：30秒后如果还没返回，这步用内置AI走，但不杀引擎
+  // 设置搜索超时：10秒后如果还没返回，这步用内置AI走，但不杀引擎
   if (searchTimeoutId) clearTimeout(searchTimeoutId);
+  const mySearchId = ++currentSearchId;
   searchTimeoutId = setTimeout(function() {
-    if (game.aiThinking) {
-      console.warn('Pikafish 搜索超时（30秒），本步用内置 AI，引擎保留');
-      // 不终止 worker，保留引擎给下一步用
-      // 只重置思考状态，用内置AI走这步
+    if (game.aiThinking && mySearchId === currentSearchId) {
+      console.warn('Pikafish 搜索超时（10秒），本步用内置 AI');
       fallbackToBuiltinAI();
     }
-  }, 30000);
+  }, 10000);
 
   // 发送搜索请求（传递棋盘副本）
   pikafishWorker.postMessage({
     type: 'search',
     board: cloneBoard(game.board),
     currentPlayer: game.currentPlayer,
+    searchId: mySearchId,
   });
 }
 
 function onPikafishBestmove(msg) {
+  // 检查 searchId，防止超时回退后 Pikafish 又返回导致走两步
+  if (msg.searchId !== undefined && msg.searchId !== currentSearchId) {
+    console.log('Pikafish 返回了过期的搜索结果 (searchId=' + msg.searchId + ', current=' + currentSearchId + ')，忽略');
+    return;
+  }
+  // 清除搜索超时
+  if (searchTimeoutId) {
+    clearTimeout(searchTimeoutId);
+    searchTimeoutId = null;
+  }
   game.aiThinking = false;
   el.aiThinking.style.display = 'none';
   el.clickLayer.style.pointerEvents = '';
 
   const move = msg.move;
   if (move) {
-    makeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+    // 长将检测：如果这步会造成第3次重复将军，强制变招
+    const moverColor = game.currentPlayer;
+    if (wouldBePerpetualCheck(game.board, game.currentPlayer, moverColor, move)) {
+      console.warn('检测到长将！强制AI变招');
+      const altMove = findNonPerpetualMove(moverColor);
+      if (altMove) {
+        makeMove(altMove.fromRow, altMove.fromCol, altMove.toRow, altMove.toCol);
+      } else {
+        // 没有替代走法，接受原走法
+        makeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+      }
+    } else {
+      makeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+    }
   } else {
-    // 没有合法走法，游戏结束
+    // 没有合法走法（将死或困毙），不结束游戏，仅提示
     console.warn('Pikafish 返回空走法:', msg.bestmove);
-    fallbackToBuiltinAI();
+    if (isCheckmate(game.currentPlayer, game.board)) {
+      playSound('juesha');
+      flashStatus('将死！');
+    } else {
+      playSound('juesha');
+      flashStatus('困毙！');
+    }
   }
 }
 
 function fallbackToBuiltinAI() {
+  const mySearchId = ++currentSearchId;  // 递增ID，使过期的 Pikafish 结果失效
+  if (searchTimeoutId) {
+    clearTimeout(searchTimeoutId);
+    searchTimeoutId = null;
+  }
   // 使用内置 AI 作为后备
   setTimeout(() => {
+    // 再次检查，防止期间已被其他路径处理或棋局已重置
+    if (mySearchId !== currentSearchId) return;
     const aiMove = getAIMove();
     game.aiThinking = false;
     el.aiThinking.style.display = 'none';
@@ -1234,14 +1393,9 @@ function updateEngineStatus(status) {
     el2 = document.createElement('div');
     el2.id = 'engineStatus';
     el2.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:bold;border:1px solid;';
-    // 插入到换边按钮后面
-    const sideInfo = document.getElementById('sideInfo');
-    if (sideInfo && sideInfo.parentNode) {
-      sideInfo.parentNode.insertBefore(el2, sideInfo.nextSibling);
-    } else {
-      const aiPanel = document.querySelector('.ai-panel');
-      if (aiPanel) aiPanel.appendChild(el2);
-    }
+    // 插入到AI面板
+    const aiPanel = document.querySelector('.ai-panel');
+    if (aiPanel) aiPanel.appendChild(el2);
   }
   let dot;
   if (el2.querySelector('.engine-dot')) {
@@ -1291,7 +1445,7 @@ function updateEngineStatus(status) {
 }
 
 function triggerAI() {
-  if (!game.aiEnabled || game.gameOver || game.currentPlayer !== game.aiColor) return;
+  if (game.gameOver || !isAIControlled(game.currentPlayer)) return;
 
   game.aiThinking = true;
   el.aiThinking.style.display = 'flex';
@@ -1306,7 +1460,9 @@ function triggerAI() {
     if (!pikafishReady && !pikafishInitializing) {
       // 引擎未就绪，使用内置 AI
       updateEngineStatus('builtin');
+      const mySearchId = ++currentSearchId;
       setTimeout(() => {
+        if (mySearchId !== currentSearchId) return;
         const aiMove = getAIMove();
         game.aiThinking = false;
         el.aiThinking.style.display = 'none';
@@ -1346,17 +1502,20 @@ function generateNotation(code, fromRow, fromCol, toRow, toCol) {
 
 // ======================== 游戏操作 ========================
 
-function initGame(playerColor) {
-  // 设置玩家和AI颜色
-  // playerColor = 玩家选择的方（也是 AI 执棋方）
-  // humanColor = 玩家实际操作的棋色（与AI方相反）
-  if (playerColor) {
-    game.playerColor = playerColor;
-    game.aiColor = playerColor;              // AI 执玩家选择的方
-    game.humanColor = playerColor === 'red' ? 'black' : 'red';
-    // AI执黑时默认翻转棋盘（AI视角在底部）
-    game.boardFlipped = (playerColor === 'black');
+function initGame() {
+  // 递增 sessionId，废弃所有旧的动画回调和 AI 搜索回调
+  game.sessionId++;
+  // 清除旧的搜索超时计时器
+  if (searchTimeoutId) {
+    clearTimeout(searchTimeoutId);
+    searchTimeoutId = null;
   }
+  // 递增 searchId，废弃旧的 Pikafish 结果
+  currentSearchId++;
+
+  // 从 UI 读取 AI 设置
+  game.aiRed = el.aiRedToggle ? el.aiRedToggle.checked : false;
+  game.aiBlack = el.aiBlackToggle ? el.aiBlackToggle.checked : false;
 
   game.board = cloneBoard(INITIAL_BOARD);
   game.currentPlayer = 'red';  // 红方始终先行
@@ -1373,9 +1532,7 @@ function initGame(playerColor) {
   game.aiThinking = false;
   game.moveAnimating = false;
   game.aiMoveHistory = [];
-
-  // 更新 UI
-  el.playerSideLabel.textContent = game.playerColor === 'red' ? '红方' : '黑方';
+  game.positionHistory = [];  // 清空长将历史
 
   // 开始新棋局时，只在用户未关闭背景音乐时才播放
   if (el.bgmToggle && el.bgmToggle.checked) {
@@ -1392,13 +1549,17 @@ function initGame(playerColor) {
     pikafishWorker.postMessage({ type: 'newgame' });
   }
 
-  // 如果 AI 执红（玩家执黑），AI 先行
-  if (game.aiEnabled && game.currentPlayer === game.aiColor && !game.gameOver) {
+  // 如果红方由 AI 控制，AI 先行
+  if (isAIControlled(game.currentPlayer) && !game.gameOver) {
     triggerAI();
   }
 }
 
 function saveSnapshot() {
+  // 记录长将检测所需的局面信息
+  // 当前 currentPlayer 是走棋后的对方，moverColor 是刚走棋的一方
+  const moverColor = game.currentPlayer === 'red' ? 'black' : 'red';
+  recordPosition(game.inCheck, moverColor);
   game.boardSnapshots.push({
     board: cloneBoard(game.board),
     currentPlayer: game.currentPlayer,
@@ -1414,17 +1575,45 @@ function saveSnapshot() {
 }
 
 function undoMove() {
-  if (game.boardSnapshots.length <= 1 || game.gameOver || game.aiThinking) return;
+  if (game.boardSnapshots.length <= 1 || game.aiThinking) return;
 
-  // 如果 AI 开启且当前是玩家方走棋（说明上一步是 AI 走的），需要撤两步
-  let stepsToUndo = 1;
-  if (game.aiEnabled && game.currentPlayer === game.humanColor && game.boardSnapshots.length > 2) {
-    stepsToUndo = 2;
+  // AI互殴模式（双方都是AI）：只退1步，方便观察
+  if (game.aiRed && game.aiBlack) {
+    let stepsToUndo = 1;
+    for (let i = 0; i < stepsToUndo; i++) {
+      game.boardSnapshots.pop();
+      if (game.positionHistory.length > 0) game.positionHistory.pop();
+    }
+    const snapshot = game.boardSnapshots[game.boardSnapshots.length - 1];
+    game.board = cloneBoard(snapshot.board);
+    game.currentPlayer = snapshot.currentPlayer;
+    game.moveHistory = snapshot.moveHistory.slice();
+    game.capturedPieces = JSON.parse(JSON.stringify(snapshot.capturedPieces));
+    game.lastMove = snapshot.lastMove;
+    game.inCheck = snapshot.inCheck;
+    game.checkedColor = snapshot.checkedColor;
+    game.gameOver = false;
+    game.winner = null;
+    renderAll();
+    if (isAIControlled(game.currentPlayer) && !game.gameOver) triggerAI();
+    return;
   }
+
+  // 回退到上一个人类可操作的局面：
+  // 如果当前回合是AI控制的方，说明上一步是人类走的，只撤1步
+  // 如果当前回合不是AI控制的方，说明上一步是AI走的，需要撤到再上一步
+  let stepsToUndo = 1;
+  while (stepsToUndo < game.boardSnapshots.length) {
+    const snapshot = game.boardSnapshots[game.boardSnapshots.length - stepsToUndo];
+    if (snapshot && !isAIControlled(snapshot.currentPlayer)) break;
+    stepsToUndo++;
+  }
+  if (stepsToUndo >= game.boardSnapshots.length) stepsToUndo = game.boardSnapshots.length - 1;
 
   for (let i = 0; i < stepsToUndo; i++) {
     if (game.boardSnapshots.length <= 1) break;
     game.boardSnapshots.pop();
+    if (game.positionHistory.length > 0) game.positionHistory.pop();
     // 同步移除 AI 走法历史
     if (game.aiMoveHistory.length > 0) {
       game.aiMoveHistory.pop();
@@ -1469,35 +1658,63 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
   if (movingPiece) {
     // 动画期间阻止用户操作
     game.moveAnimating = true;
-    // 添加移动类，提升层级
+    // 添加移动类，提升层级+抬起动画
     movingPiece.classList.add('moving');
 
     // 如果有吃子，先播放被吃棋子的消失动画
     if (captured) {
       const capturedPiece = el.piecesLayer.querySelector('.piece[data-row="' + toRow + '"][data-col="' + toCol + '"]');
       if (capturedPiece) {
-        capturedPiece.classList.add('captured');
+        // 延迟一点让移动棋子快到达时才触发吃子动画
+        setTimeout(function() {
+          capturedPiece.classList.add('captured');
+        }, 150);
       }
-      // 添加冲击波效果
+      // 添加多层冲击波效果
       const burst = document.createElement('div');
       burst.className = 'capture-burst';
       burst.style.left = toPos.left + '%';
       burst.style.top = toPos.top + '%';
       el.piecesLayer.appendChild(burst);
-      // 0.5秒后移除冲击波
-      setTimeout(function() { if (burst.parentNode) burst.parentNode.removeChild(burst); }, 500);
+
+      // 添加火花粒子
+      var sparkCount = 8;
+      for (var s = 0; s < sparkCount; s++) {
+        var spark = document.createElement('div');
+        spark.className = 'capture-spark';
+        spark.style.left = toPos.left + '%';
+        spark.style.top = toPos.top + '%';
+        var angle = (Math.PI * 2 * s) / sparkCount;
+        var dist = 30 + Math.random() * 25;
+        spark.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
+        spark.style.setProperty('--dy', Math.sin(angle) * dist + 'px');
+        spark.style.animationDelay = (0.15 + Math.random() * 0.05) + 's';
+        el.piecesLayer.appendChild(spark);
+      }
+
+      // 0.8秒后清理冲击波和火花
+      setTimeout(function() {
+        if (burst.parentNode) burst.parentNode.removeChild(burst);
+        var sparks = el.piecesLayer.querySelectorAll('.capture-spark');
+        sparks.forEach(function(sp) { if (sp.parentNode) sp.parentNode.removeChild(sp); });
+      }, 800);
     }
 
     // 移动棋子到目标位置（CSS transition自动播放动画）
-    // 用requestAnimationFrame确保浏览器先渲染旧位置再改变
+    // 用双 requestAnimationFrame 确保浏览器先渲染旧位置再改变
     requestAnimationFrame(function() {
-      movingPiece.style.left = toPos.left + '%';
-      movingPiece.style.top = toPos.top + '%';
+      requestAnimationFrame(function() {
+        movingPiece.style.left = toPos.left + '%';
+        movingPiece.style.top = toPos.top + '%';
+      });
     });
 
     // 动画完成后更新棋盘状态并重新渲染
-    var animDuration = captured ? 450 : 350;
+    var animDuration = captured ? 500 : 400;
+    var mySessionId = game.sessionId;  // 记录当前棋局标识
     setTimeout(function() {
+      // 如果棋局已重置（sessionId 变化），放弃此次回调
+      if (mySessionId !== game.sessionId) return;
       // 解除动画锁
       game.moveAnimating = false;
       // 更新棋盘数据
@@ -1522,15 +1739,13 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
       game.checkedColor = game.inCheck ? game.currentPlayer : null;
 
       if (isCheckmate(game.currentPlayer, game.board)) {
-        game.gameOver = true;
-        game.winner = moverColor;
+        // 将死不结束游戏，玩家可悔棋演算，仅提示
         playSound('juesha');
-        setTimeout(function() { showModal(moverColor, 'checkmate'); }, 500);
+        flashStatus('将死！');
       } else if (isStalemate(game.currentPlayer, game.board)) {
-        game.gameOver = true;
-        game.winner = moverColor;
+        // 困毙不结束游戏，仅提示
         playSound('juesha');
-        setTimeout(function() { showModal(moverColor, 'stalemate'); }, 500);
+        flashStatus('困毙！');
       } else if (game.inCheck) {
         playSound('jiangjun');
         flashStatus('将军！');
@@ -1545,8 +1760,17 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
       game.validMoves = [];
       renderAll();
 
+      // 落地脉冲效果
+      var landedPiece = el.piecesLayer.querySelector('.piece[data-row="' + toRow + '"][data-col="' + toCol + '"]');
+      if (landedPiece) {
+        landedPiece.classList.add('landing');
+        setTimeout(function() {
+          if (landedPiece.parentNode) landedPiece.classList.remove('landing');
+        }, 300);
+      }
+
       // AI 走棋
-      if (!game.gameOver && game.aiEnabled && game.currentPlayer === game.aiColor) {
+      if (!game.gameOver && isAIControlled(game.currentPlayer)) {
         triggerAI();
       }
     }, animDuration);
@@ -1573,15 +1797,13 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
     game.checkedColor = game.inCheck ? game.currentPlayer : null;
 
     if (isCheckmate(game.currentPlayer, game.board)) {
-      game.gameOver = true;
-      game.winner = moverColor;
+      // 将死不结束游戏，玩家可悔棋演算，仅提示
       playSound('juesha');
-      setTimeout(function() { showModal(moverColor, 'checkmate'); }, 500);
+      flashStatus('将死！');
     } else if (isStalemate(game.currentPlayer, game.board)) {
-      game.gameOver = true;
-      game.winner = moverColor;
+      // 困毙不结束游戏，仅提示
       playSound('juesha');
-      setTimeout(function() { showModal(moverColor, 'stalemate'); }, 500);
+      flashStatus('困毙！');
     } else if (game.inCheck) {
       playSound('jiangjun');
       flashStatus('将军！');
@@ -1596,7 +1818,7 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
     game.validMoves = [];
     renderAll();
 
-    if (!game.gameOver && game.aiEnabled && game.currentPlayer === game.aiColor) {
+    if (!game.gameOver && isAIControlled(game.currentPlayer)) {
       triggerAI();
     }
   }
@@ -1607,7 +1829,7 @@ function makeMove(fromRow, fromCol, toRow, toCol) {
 function handleBoardClick(row, col) {
   if (game.gameOver || game.aiThinking || game.moveAnimating) return;
   // AI 模式下，AI 回合禁止玩家操作
-  if (game.aiEnabled && game.currentPlayer === game.aiColor) return;
+  if (isAIControlled(game.currentPlayer)) return;
 
   const piece = getPiece(row, col);
 
@@ -1694,7 +1916,7 @@ function renderTurnIndicator() {
   const dot = el.turnIndicator.querySelector('.turn-dot');
   dot.className = 'turn-dot ' + game.currentPlayer + ' active';
   let text = (isRed ? '红方' : '黑方') + '走棋';
-  if (game.aiEnabled && game.currentPlayer === game.aiColor) text += '（电脑）';
+  if (isAIControlled(game.currentPlayer)) text += '（电脑）';
   el.turnText.textContent = text;
 }
 
@@ -1906,13 +2128,14 @@ function updateUndoButton() {
 
 function showModal(winner, reason) {
   const winnerName = winner === 'red' ? '红方' : '黑方';
-  const winnerLabel = winner === game.aiColor && game.aiEnabled ? '电脑（' + winnerName + '）' : winnerName;
-  const loserLabel = winner === game.aiColor ? (winner === 'red' ? '黑方（你）' : '红方（你）') : (winner === 'red' ? '红方（你）' : '黑方（你）');
+  const winnerIsAI = isAIControlled(winner);
+  const loserIsAI = isAIControlled(winner === 'red' ? 'black' : 'red');
+  const winnerLabel = winnerIsAI ? '电脑（' + winnerName + '）' : winnerName;
   el.gameOverTitle.textContent = '游戏结束';
   if (reason === 'checkmate') {
-    el.gameOverText.textContent = winnerLabel + '获胜！将死' + (winner === game.aiColor ? '你' : '电脑') + '！';
+    el.gameOverText.textContent = winnerLabel + '获胜！将死' + (loserIsAI ? '电脑' : '你') + '！';
   } else if (reason === 'stalemate') {
-    el.gameOverText.textContent = winnerLabel + '获胜！' + (winner === game.aiColor ? '你' : '电脑') + '困毙！';
+    el.gameOverText.textContent = winnerLabel + '获胜！' + (loserIsAI ? '电脑' : '你') + '困毙！';
   }
   el.gameOverModal.classList.add('show');
 }
@@ -2106,29 +2329,35 @@ function playSynthSound(name) {
 }
 
 function playSound(name) {
-  // 先尝试加载真实音效文件
   const src = CONFIG.audio[name];
-  if (!src) return;
+  if (!src) {
+    // 没有音频文件配置，直接用合成音效
+    try { playSynthSound(name); } catch (e) {}
+    return;
+  }
 
   try {
     if (!audioCache[name]) {
       audioCache[name] = new Audio(src);
-      // 音效文件加载失败时，回退到合成音效
       audioCache[name].onerror = function() {
         try { playSynthSound(name); } catch (e) {}
       };
     }
     const audio = audioCache[name];
+    // 如果音频还没加载好，直接用合成音效（不等待文件加载）
+    if (audio.readyState < 2) {
+      try { playSynthSound(name); } catch (e) {}
+      // 同时继续预加载文件，下次就能用
+      return;
+    }
     audio.currentTime = 0;
     var playPromise = audio.play();
     if (playPromise) {
       playPromise.catch(function() {
-        // 播放失败（可能是文件还没加载完），用合成音效
         try { playSynthSound(name); } catch (e) {}
       });
     }
   } catch (e) {
-    // 异常时回退到合成音效
     try { playSynthSound(name); } catch (e2) {}
   }
 }
@@ -2294,14 +2523,9 @@ function bindElements() {
     gameOverTitle: document.getElementById('gameOverTitle'),
     gameOverText: document.getElementById('gameOverText'),
     modalResetBtn: document.getElementById('modalResetBtn'),
-    aiToggle: document.getElementById('aiToggle'),
-    aiToggleText: document.getElementById('aiToggleText'),
-    difficultySelect: null, // 已移除难度选择
+    aiRedToggle: document.getElementById('aiRedToggle'),
+    aiBlackToggle: document.getElementById('aiBlackToggle'),
     aiThinking: document.getElementById('aiThinking'),
-    sideSelectModal: document.getElementById('sideSelectModal'),
-    selectRedBtn: document.getElementById('selectRedBtn'),
-    selectBlackBtn: document.getElementById('selectBlackBtn'),
-    playerSideLabel: document.getElementById('playerSideLabel'),
     bgmToggle: document.getElementById('bgmToggle'),
     bgmToggleText: document.getElementById('bgmToggleText'),
   };
@@ -2309,36 +2533,33 @@ function bindElements() {
 
 function bindEvents() {
   el.resetBtn.addEventListener('click', () => {
-    showSideSelectModal();
+    initGame();
     playSound('click');
   });
   el.undoBtn.addEventListener('click', undoMove);
   el.rotateBtn.addEventListener('click', toggleBoardRotation);
   el.modalResetBtn.addEventListener('click', () => {
     hideModal();
-    showSideSelectModal();
+    initGame();
+    playSound('click');
   });
-  el.aiToggle.addEventListener('change', () => {
-    game.aiEnabled = el.aiToggle.checked;
-    el.aiToggleText.textContent = game.aiEnabled ? '电脑对战' : '双人对战';
-    // 显示/隐藏换边和难度设置
-    document.getElementById('sideInfo').style.display = game.aiEnabled ? 'flex' : 'none';
+
+  // 红方AI开关
+  el.aiRedToggle.addEventListener('change', () => {
+    game.aiRed = el.aiRedToggle.checked;
     renderTurnIndicator();
-    if (game.aiEnabled && game.currentPlayer === game.aiColor && !game.gameOver) {
+    if (isAIControlled(game.currentPlayer) && !game.gameOver && !game.aiThinking) {
       triggerAI();
     }
   });
 
-  // 选边按钮
-  el.selectRedBtn.addEventListener('click', () => {
-    hideSideSelectModal();
-    initGame('red');
-    playSound('click');
-  });
-  el.selectBlackBtn.addEventListener('click', () => {
-    hideSideSelectModal();
-    initGame('black');
-    playSound('click');
+  // 黑方AI开关
+  el.aiBlackToggle.addEventListener('change', () => {
+    game.aiBlack = el.aiBlackToggle.checked;
+    renderTurnIndicator();
+    if (isAIControlled(game.currentPlayer) && !game.gameOver && !game.aiThinking) {
+      triggerAI();
+    }
   });
 
   // 背景音乐开关
@@ -2362,29 +2583,16 @@ function bindEvents() {
   });
 }
 
-function showSideSelectModal() {
-  el.sideSelectModal.classList.add('show');
-}
-
-function hideSideSelectModal() {
-  el.sideSelectModal.classList.remove('show');
-}
-
 window.addEventListener('DOMContentLoaded', () => {
   bindElements();
   bindEvents();
-  game.aiEnabled = el.aiToggle.checked;
-  el.aiToggleText.textContent = game.aiEnabled ? '电脑对战' : '双人对战';
 
   // 初始化 Pikafish 引擎（异步，不阻塞页面渲染）
   updateEngineStatus('loading');
   initPikafish();
 
-  // 首次加载绘制空棋盘，等待玩家选边
+  // 直接开始新棋局（默认无AI，玩家手动勾选AI方）
   setTimeout(() => {
-    game.board = cloneBoard(INITIAL_BOARD);
-    drawBoard();
-    renderPieces();
-    renderClickZones();
+    initGame();
   }, 100);
 });

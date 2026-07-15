@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>中国象棋 - 人机对战</title>
-  <link rel="stylesheet" href="css/style.css?v=9">
+  <link rel="stylesheet" href="css/style.css?v=17">
 </head>
 <body>
   <!-- 背景音乐（Web Audio API 合成，无需外部文件） -->
@@ -21,13 +21,15 @@
 
       <!-- AI 设置 -->
       <div class="ai-panel">
-        <label class="ai-toggle-label">
-          <input type="checkbox" id="aiToggle" checked>
-          <span id="aiToggleText">电脑对战</span>
-        </label>
-        <div class="side-info" id="sideInfo">
-          <span class="difficulty-label">AI执：</span>
-          <span id="playerSideLabel">红方</span>
+        <div class="ai-side-toggles">
+          <label class="ai-toggle-label">
+            <input type="checkbox" id="aiRedToggle">
+            <span>红方AI</span>
+          </label>
+          <label class="ai-toggle-label">
+            <input type="checkbox" id="aiBlackToggle">
+            <span>黑方AI</span>
+          </label>
         </div>
         <div class="ai-thinking" id="aiThinking" style="display:none;">
           <span class="thinking-dot"></span>
@@ -63,7 +65,7 @@
       <div class="board-container" id="boardContainer">
         <img class="board-bg" src="images/bg.png" alt="棋盘" id="boardBg"
              onerror="this.style.display='none'; document.getElementById('boardCanvas').style.display='block'; drawBoard();">
-        <canvas class="board-canvas" id="boardCanvas"></canvas>
+        <canvas class="board-canvas" id="boardCanvas" style="display:none;"></canvas>
         <div class="pieces-layer" id="piecesLayer"></div>
         <div class="moves-layer" id="movesLayer"></div>
         <div class="click-layer" id="clickLayer"></div>
@@ -84,18 +86,6 @@
     <div class="disclaimer-text">免责声明：本游戏仅供学习交流使用，棋子图片、棋盘背景、音效等素材均来自网络，版权归原作者所有。如涉侵权请联系删除。AI引擎采用开源项目 Pikafish。</div>
   </div>
 
-  <!-- 选边弹窗 -->
-  <div class="modal-overlay show" id="sideSelectModal">
-    <div class="modal-content">
-      <h2 class="modal-title">选择AI执棋方</h2>
-      <p class="modal-text">AI 执该方自动走棋，你操作对方</p>
-      <div class="side-select-buttons">
-        <button class="btn btn-side btn-red" id="selectRedBtn">AI执红方（先手）</button>
-        <button class="btn btn-side btn-black" id="selectBlackBtn">AI执黑方（后手）</button>
-      </div>
-    </div>
-  </div>
-
   <!-- 游戏结束弹窗 -->
   <div class="modal-overlay" id="gameOverModal">
     <div class="modal-content">
@@ -105,7 +95,7 @@
     </div>
   </div>
 
-  <script src="js/game.js?v=12"></script>
+  <script src="js/game.js?v=27"></script>
   <script>
     // 注册 Service Worker，缓存引擎文件加速二次访问
     if ('serviceWorker' in navigator) {

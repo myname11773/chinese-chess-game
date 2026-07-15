@@ -9,7 +9,8 @@
 body {
   font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -132,6 +133,16 @@ body {
   padding: 14px;
   margin-bottom: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ai-side-toggles {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 10px;
+}
+
+.ai-side-toggles .ai-toggle-label {
+  margin-bottom: 0;
 }
 
 .ai-toggle-label {
@@ -297,12 +308,13 @@ body {
 
 .board-container {
   position: relative;
-  width: 640px;
-  aspect-ratio: 507 / 567;
+  width: min(640px, calc((100vh - 48px) * 551 / 609));
+  aspect-ratio: 551 / 609;
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 2px rgba(255, 215, 0, 0.2);
   background: #dcb775;
+  flex-shrink: 0;
 }
 
 .board-bg {
@@ -311,9 +323,10 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
   pointer-events: none;
   z-index: 1;
+  border-radius: 12px;
 }
 
 .board-canvas {
@@ -366,15 +379,16 @@ body {
 /* ========== 棋子 ========== */
 .piece {
   position: absolute;
-  transform: translate(-50%, -50%);
-  width: 14.5%;
+  transform: translate(-50%, -50%) scale(1);
+  width: 10.2%;
   aspect-ratio: 1;
   cursor: pointer;
-  transition: left 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
-              top 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+  transition: left 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+              top 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
               filter 0.2s ease;
   z-index: 2;
   pointer-events: none;
+  will-change: left, top, transform;
 }
 
 .piece img {
@@ -404,38 +418,142 @@ body {
 }
 
 .piece.captured {
-  animation: captureFade 0.45s ease forwards;
+  animation: captureShatter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
   z-index: 3;
 }
 
-@keyframes captureFade {
-  0% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: brightness(1); }
-  40% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.4) rotate(15deg); filter: brightness(1.5); }
-  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.2) rotate(45deg); filter: brightness(2); }
+@keyframes captureShatter {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+    filter: brightness(1) drop-shadow(2px 3px 4px rgba(0, 0, 0, 0.4));
+  }
+  30% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.3) rotate(-8deg);
+    filter: brightness(1.8) drop-shadow(0 0 12px #ff6600);
+  }
+  60% {
+    opacity: 0.5;
+    transform: translate(-50%, -50%) scale(1.5) rotate(20deg);
+    filter: brightness(2.5) drop-shadow(0 0 20px #ff3300);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.1) rotate(60deg);
+    filter: brightness(3) blur(4px);
+  }
 }
 
-/* 移动中的棋子：提升层级，确保在上方 */
+/* 移动中的棋子：抬起+放大+提升层级 */
 .piece.moving {
   z-index: 10;
-  transition: left 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
-              top 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+  transition: left 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+              top 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) !important;
+  animation: pieceLift 0.4s ease forwards;
 }
 
-/* 吃子时的冲击波效果 */
+@keyframes pieceLift {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    filter: drop-shadow(2px 3px 4px rgba(0, 0, 0, 0.4));
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.15);
+    filter: drop-shadow(6px 8px 12px rgba(0, 0, 0, 0.5)) brightness(1.1);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    filter: drop-shadow(2px 3px 4px rgba(0, 0, 0, 0.4));
+  }
+}
+
+/* 吃子时的落地脉冲效果 */
+.piece.landing {
+  animation: pieceLand 0.3s ease;
+}
+
+@keyframes pieceLand {
+  0% { transform: translate(-50%, -50%) scale(1); }
+  40% { transform: translate(-50%, -50%) scale(0.92); }
+  70% { transform: translate(-50%, -50%) scale(1.04); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+/* 吃子时的冲击波效果 - 多层扩散 */
 .capture-burst {
   position: absolute;
-  width: 14.5%;
+  width: 13%;
   aspect-ratio: 1;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   pointer-events: none;
   z-index: 5;
-  animation: burstExpand 0.5s ease-out forwards;
 }
 
-@keyframes burstExpand {
-  0% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.8); opacity: 1; }
-  100% { box-shadow: 0 0 0 60px rgba(255, 100, 0, 0); opacity: 0; }
+.capture-burst::before,
+.capture-burst::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.capture-burst::before {
+  animation: burstRing1 0.6s ease-out forwards;
+}
+
+.capture-burst::after {
+  animation: burstRing2 0.5s ease-out 0.1s forwards;
+}
+
+@keyframes burstRing1 {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 200, 0, 0.9);
+    opacity: 1;
+  }
+  100% {
+    box-shadow: 0 0 0 50px rgba(255, 100, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes burstRing2 {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 80, 80, 0.7);
+    opacity: 0.8;
+  }
+  100% {
+    box-shadow: 0 0 0 35px rgba(255, 30, 30, 0);
+    opacity: 0;
+  }
+}
+
+/* 吃子时的火花粒子 */
+.capture-spark {
+  position: absolute;
+  width: 3%;
+  height: 3%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffdd44, #ff6600);
+  pointer-events: none;
+  z-index: 6;
+  animation: sparkFly 0.6s ease-out forwards;
+}
+
+@keyframes sparkFly {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.2);
+  }
 }
 
 /* 文字回退棋子（图片缺失时显示） */
@@ -747,7 +865,7 @@ body {
   }
   
   .board-container {
-    width: min(90vw, 640px);
+    width: min(90vw, 640px, calc((100vh - 48px) * 551 / 609));
   }
 }
 
