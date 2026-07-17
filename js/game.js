@@ -856,6 +856,10 @@ function evaluate(nb) {
   let score = 0;
   let aiKingExists = false, playerKingExists = false;
 
+  // === 红方进攻偏好 ===
+  // 红方AI更偏好进攻：奖励推进、控制中心、将军
+  const redAggression = aiColor === 'red';
+
   for (let i = 0; i < 90; i++) {
     const p = nb[i];
     if (p === 0) continue;
@@ -879,6 +883,20 @@ function evaluate(nb) {
       if (sign < 0 && r <= 4) val += 20;
     }
 
+    // === 红方进攻偏好：奖励红方棋子推进到黑方半场 ===
+    if (redAggression && sign === aiSign) {
+      // 红方棋子(sign=-1)越靠近黑方(r越小)越奖励
+      // r=0(黑方底线)奖励最大，r=4(河界)奖励最小
+      if (absP !== 1) { // 不对将帅加成
+        const advanceBonus = Math.max(0, (4 - r) * 5);
+        val += advanceBonus;
+      }
+      // 控制中路（c=3,4,5）额外加成
+      if (c >= 3 && c <= 5 && r <= 4) {
+        val += 8;
+      }
+    }
+
     score += sign === aiSign ? val : -val;
   }
 
@@ -889,6 +907,11 @@ function evaluate(nb) {
   const enemyColor = aiColor === 'black' ? 'red' : 'black';
   if (canCaptureKing(nb, enemyColor)) score += 300;
   if (canCaptureKing(nb, aiColor)) score -= 300;
+
+  // === 红方进攻偏好：将军额外加成 ===
+  if (redAggression && canCaptureKing(nb, enemyColor)) {
+    score += 150; // 红方将军额外奖励
+  }
 
   return score;
 }
@@ -1340,19 +1363,23 @@ function onPikafishBestmove(msg) {
 
   const move = msg.move;
   if (move) {
+    // === 红方AI进攻偏好：如果引擎选了被动走法，寻找进攻替代 ===
+    const finalMove = (game.currentPlayer === 'red')
+      ? applyRedAggressionOverride(move)
+      : move;
+
     // 长将检测：如果这步会造成第3次重复将军，强制变招
     const moverColor = game.currentPlayer;
-    if (wouldBePerpetualCheck(game.board, game.currentPlayer, moverColor, move)) {
+    if (wouldBePerpetualCheck(game.board, game.currentPlayer, moverColor, finalMove)) {
       console.warn('检测到长将！强制AI变招');
       const altMove = findNonPerpetualMove(moverColor);
       if (altMove) {
         makeMove(altMove.fromRow, altMove.fromCol, altMove.toRow, altMove.toCol);
       } else {
-        // 没有替代走法，接受原走法
-        makeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+        makeMove(finalMove.fromRow, finalMove.fromCol, finalMove.toRow, finalMove.toCol);
       }
     } else {
-      makeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+      makeMove(finalMove.fromRow, finalMove.fromCol, finalMove.toRow, finalMove.toCol);
     }
   } else {
     // 没有合法走法（将死或困毙），不结束游戏，仅提示
@@ -1365,6 +1392,95 @@ function onPikafishBestmove(msg) {
       flashStatus('困毙！');
     }
   }
+}
+
+// === 红方AI进攻偏好：引擎走法后处理 ===
+// 当 Pikafish 返回的走法不是吃子/将军时，
+// 检查是否有同等优秀的进攻性走法（吃子或将军）
+function applyRedAggressionOverride(engineMove) {
+  const board = game.board;
+  const aiColor = 'red';
+
+  // 如果引擎走法本身就是吃子或将军，直接使用
+  const isCapture = board[engineMove.toRow][engineMove.toCol] !== null;
+  if (isCapture) return engineMove;
+
+  // 检查引擎走法是否将军
+  const tempBoard = cloneBoard(board);
+  const piece = tempBoard[engineMove.fromRow][engineMove.fromCol];
+  tempBoard[engineMove.toRow][engineMove.toCol] = piece;
+  tempBoard[engineMove.fromRow][engineMove.fromCol] = null;
+  const isCheck = canCaptureKing(boardToNumeric(tempBoard), 'red');
+  if (isCheck) return engineMove;
+
+  // 寻找所有合法的吃子走法和将军走法
+  const nb = boardToNumeric(board);
+  const allMoves = genMovesFast(nb, aiColor);
+  const aggressiveMoves = [];
+
+  for (const m of allMoves) {
+    const from = m[0]*9+m[1], to = m[2]*9+m[3];
+    const captured = nb[to];
+
+    // 只看吃子走法
+    if (captured === 0) continue;
+
+    // 模拟走法，检查合法性和是否将军
+    nb[to] = nb[from];
+    nb[from] = 0;
+    if (!canCaptureKing(nb, aiColor)) {
+      // 合法吃子走法
+      // 检查是否同时将军
+      const givesCheck = canCaptureKing(nb, 'red');
+      aggressiveMoves.push({
+        fromRow: m[0], fromCol: m[1], toRow: m[2], toCol: m[3],
+        capturedType: captured > 0 ? captured : -captured,
+        givesCheck: givesCheck,
+      });
+    }
+    nb[from] = nb[to];
+    nb[to] = captured;
+  }
+
+  if (aggressiveMoves.length === 0) return engineMove;
+
+  // 按吃子价值和是否将军排序
+  aggressiveMoves.sort((a, b) => {
+    // 先看是否将军
+    if (a.givesCheck && !b.givesCheck) return -1;
+    if (!a.givesCheck && b.givesCheck) return 1;
+    // 再看吃子价值（type: 5=车900, 6=炮450, 4=马400, 3=象200, 2=士200, 7=卒100）
+    const valA = TYPE_VALUES[a.capturedType] || 0;
+    const valB = TYPE_VALUES[b.capturedType] || 0;
+    return valB - valA;
+  });
+
+  // 优先选将军+吃子的走法
+  const checkCaptures = aggressiveMoves.filter(m => m.givesCheck);
+  if (checkCaptures.length > 0) {
+    // 将军+吃子，直接使用
+    const best = checkCaptures[0];
+    console.log('[红方进攻] 引擎走法被替换为将军+吃子:', best);
+    return { fromRow: best.fromRow, fromCol: best.fromCol, toRow: best.toRow, toCol: best.toCol };
+  }
+
+  // 吃高价值棋子（车/马/炮，type 4/5/6）的走法
+  const bigCaptures = aggressiveMoves.filter(m => m.capturedType >= 4 && m.capturedType <= 6);
+  if (bigCaptures.length > 0 && Math.random() < 0.4) {
+    // 40%概率选择吃大子
+    const best = bigCaptures[0];
+    console.log('[红方进攻] 引擎走法被替换为吃大子:', best);
+    return { fromRow: best.fromRow, fromCol: best.fromCol, toRow: best.toRow, toCol: best.toCol };
+  }
+
+  // 其他吃子走法，20%概率替换（避免频繁偏离引擎判断）
+  if (aggressiveMoves.length > 0 && Math.random() < 0.2) {
+    const best = aggressiveMoves[0];
+    console.log('[红方进攻] 引擎走法被替换为吃子:', best);
+    return { fromRow: best.fromRow, fromCol: best.fromCol, toRow: best.toRow, toCol: best.toCol };
+  }
+
+  return engineMove;
 }
 
 function fallbackToBuiltinAI() {
@@ -1448,39 +1564,48 @@ function updateEngineStatus(status) {
 // ========== 开局库 ==========
 // 每条记录为一串着法 [fromRow, fromCol, toRow, toCol]
 // 红方先行（索引0,2,4...），黑方后行（索引1,3,5...）
+// aggression: 1=进攻型, 0=稳健型
 const OPENING_BOOK = [
+  // === 进攻型开局（红方AI优先选择）===
   // 1. 中炮对屏风马（马8进7）
-  [[7,7,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[3,6,4,6]],
+  { moves: [[7,7,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[3,6,4,6]], aggression: 1 },
   // 2. 中炮对屏风马（马2进3）
-  [[7,7,7,4],[0,1,2,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[3,2,4,2]],
+  { moves: [[7,7,7,4],[0,1,2,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[3,2,4,2]], aggression: 1 },
   // 3. 中炮对列手炮
-  [[7,7,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  { moves: [[7,7,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]], aggression: 1 },
   // 4. 中炮对顺炮
-  [[7,7,7,4],[2,1,2,4],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]],
+  { moves: [[7,7,7,4],[2,1,2,4],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]], aggression: 1 },
   // 5. 中炮对反宫马
-  [[7,7,7,4],[0,7,2,6],[9,7,7,6],[3,2,4,2],[9,1,7,2],[0,1,2,2]],
+  { moves: [[7,7,7,4],[0,7,2,6],[9,7,7,6],[3,2,4,2],[9,1,7,2],[0,1,2,2]], aggression: 1 },
   // 6. 左中炮对屏风马
-  [[7,1,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6],[9,7,7,6],[3,2,4,2]],
+  { moves: [[7,1,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6],[9,7,7,6],[3,2,4,2]], aggression: 1 },
   // 7. 左中炮对列手炮
-  [[7,1,7,4],[2,1,2,4],[9,1,7,2],[0,7,2,6],[9,7,7,6],[0,1,2,2]],
-  // 8. 仙人指路对卒底炮
-  [[6,6,5,6],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
-  // 9. 仙人指路对起马
-  [[6,6,5,6],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
-  // 10. 仙人指路对卒3进1
-  [[6,6,5,6],[3,2,4,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]],
-  // 11. 飞相局对中炮（相三进五）
-  [[9,6,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
-  // 12. 飞相局对起马（相七进五）
-  [[9,2,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,1,2,4]],
-  // 13. 起马局对中炮
-  [[9,7,7,6],[2,7,2,4],[7,7,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
-  // 14. 起马局对起马
-  [[9,7,7,6],[0,7,2,6],[7,7,7,4],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
-  // 15. 过宫炮对中炮
-  [[7,7,7,3],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
-  // 16. 过宫炮对起马
-  [[7,7,7,3],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
+  { moves: [[7,1,7,4],[2,1,2,4],[9,1,7,2],[0,7,2,6],[9,7,7,6],[0,1,2,2]], aggression: 1 },
+  // 8. 中炮急进七兵
+  { moves: [[7,7,7,4],[0,7,2,6],[6,2,5,2],[0,1,2,2],[9,7,7,6],[3,6,4,6]], aggression: 1 },
+  // 9. 中炮横车盘头马
+  { moves: [[7,7,7,4],[0,1,2,2],[9,0,9,1],[0,7,2,6],[9,7,7,6],[3,2,4,2]], aggression: 1 },
+  // 10. 中炮巡河炮
+  { moves: [[7,7,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,5],[0,7,2,6]], aggression: 1 },
+  // === 稳健型开局 ===
+  // 11. 仙人指路对卒底炮
+  { moves: [[6,6,5,6],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]], aggression: 0 },
+  // 12. 仙人指路对起马
+  { moves: [[6,6,5,6],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]], aggression: 0 },
+  // 13. 仙人指路对卒3进1
+  { moves: [[6,6,5,6],[3,2,4,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]], aggression: 0 },
+  // 14. 飞相局对中炮（相三进五）
+  { moves: [[9,6,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]], aggression: 0 },
+  // 15. 飞相局对起马（相七进五）
+  { moves: [[9,2,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,1,2,4]], aggression: 0 },
+  // 16. 起马局对中炮
+  { moves: [[9,7,7,6],[2,7,2,4],[7,7,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6]], aggression: 0 },
+  // 17. 起马局对起马
+  { moves: [[9,7,7,6],[0,7,2,6],[7,7,7,4],[0,1,2,2],[9,1,7,2],[2,7,2,4]], aggression: 0 },
+  // 18. 过宫炮对中炮
+  { moves: [[7,7,7,3],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]], aggression: 0 },
+  // 19. 过宫炮对起马
+  { moves: [[7,7,7,3],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]], aggression: 0 },
 ];
 
 function getOpeningBookMove() {
@@ -1492,12 +1617,13 @@ function getOpeningBookMove() {
   const matching = [];
 
   for (const opening of OPENING_BOOK) {
-    if (opening.length <= history.length) continue;
+    const moves = opening.moves;
+    if (moves.length <= history.length) continue;
 
     let matches = true;
     for (let i = 0; i < history.length; i++) {
       const m = history[i];
-      const o = opening[i];
+      const o = moves[i];
       if (m.from.row !== o[0] || m.from.col !== o[1] ||
           m.to.row !== o[2] || m.to.col !== o[3]) {
         matches = false;
@@ -1510,25 +1636,50 @@ function getOpeningBookMove() {
     const nextIdx = history.length;
     const isRedMove = nextIdx % 2 === 0;
     if ((isRedMove && aiColor === 'red') || (!isRedMove && aiColor === 'black')) {
-      matching.push(opening[nextIdx]);
+      matching.push({ move: moves[nextIdx], aggression: opening.aggression });
     }
   }
 
   if (matching.length === 0) return null;
 
-  // 随机选一个
-  const move = matching[Math.floor(Math.random() * matching.length)];
+  // 红方AI优先选择进攻型开局（70%概率选进攻型，30%选稳健型）
+  if (aiColor === 'red') {
+    const aggressive = matching.filter(m => m.aggression === 1);
+    const stable = matching.filter(m => m.aggression === 0);
+    if (aggressive.length > 0 && Math.random() < 0.7) {
+      const pick = aggressive[Math.floor(Math.random() * aggressive.length)];
+      const move = pick.move;
+      if (isOpeningMoveValid(move, aiColor)) {
+        return { fromRow: move[0], fromCol: move[1], toRow: move[2], toCol: move[3] };
+      }
+    }
+    if (stable.length > 0 && Math.random() < 0.5) {
+      const pick = stable[Math.floor(Math.random() * stable.length)];
+      const move = pick.move;
+      if (isOpeningMoveValid(move, aiColor)) {
+        return { fromRow: move[0], fromCol: move[1], toRow: move[2], toCol: move[3] };
+      }
+    }
+  }
 
+  // 随机选一个
+  const pick = matching[Math.floor(Math.random() * matching.length)];
+  const move = pick.move;
+  if (!isOpeningMoveValid(move, aiColor)) return null;
+  return { fromRow: move[0], fromCol: move[1], toRow: move[2], toCol: move[3] };
+}
+
+function isOpeningMoveValid(move, aiColor) {
   // 安全检查：目标格子上有自己的棋子则放弃
   const piece = game.board[move[0]][move[1]];
-  if (!piece) return null;
-  if (PIECE_INFO[piece].color !== aiColor) return null;
+  if (!piece) return false;
+  if (PIECE_INFO[piece].color !== aiColor) return false;
 
   // 检查这步棋是否合法
   const validMoves = getValidMoves(move[0], move[1]);
-  if (!validMoves.some(m => m.row === move[2] && m.col === move[3])) return null;
+  if (!validMoves.some(m => m.row === move[2] && m.col === move[3])) return false;
 
-  return { fromRow: move[0], fromCol: move[1], toRow: move[2], toCol: move[3] };
+  return true;
 }
 
 function triggerAI() {
