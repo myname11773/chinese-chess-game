@@ -88,18 +88,18 @@ const PIECE_ATTACK_VALUES = {
 // 位置价值表（参考一叶孤舟象棋引擎，黑方视角）
 // 值已包含基础价值，评估时直接查表
 const POSITION_TABLES = {
-  // 车价值：中线最高，边线最低
+  // 车价值：中线最高，边线最低（基础值提升至~500，弃车惩罚加大）
   chariot: [
-    [206, 208, 207, 213, 214, 213, 207, 208, 206],
-    [206, 212, 209, 216, 233, 216, 209, 212, 206],
-    [206, 208, 207, 214, 216, 214, 207, 208, 206],
-    [206, 213, 213, 216, 216, 216, 213, 213, 206],
-    [208, 211, 211, 214, 215, 214, 211, 211, 208],
-    [208, 212, 212, 214, 215, 214, 212, 212, 208],
-    [204, 209, 204, 212, 214, 212, 204, 209, 204],
-    [198, 208, 204, 212, 212, 212, 204, 208, 198],
-    [200, 208, 206, 212, 200, 212, 206, 208, 200],
-    [194, 206, 204, 212, 200, 212, 204, 206, 194],
+    [506, 508, 507, 513, 514, 513, 507, 508, 506],
+    [506, 512, 509, 516, 533, 516, 509, 512, 506],
+    [506, 508, 507, 514, 516, 514, 507, 508, 506],
+    [506, 513, 513, 516, 516, 516, 513, 513, 506],
+    [508, 511, 511, 514, 515, 514, 511, 511, 508],
+    [508, 512, 512, 514, 515, 514, 512, 512, 508],
+    [504, 509, 504, 512, 514, 512, 504, 509, 504],
+    [498, 508, 504, 512, 512, 512, 504, 508, 498],
+    [500, 508, 506, 512, 500, 512, 506, 508, 500],
+    [494, 506, 504, 512, 500, 512, 504, 506, 494],
   ],
   // 马价值：中央高，边角低，卧槽位高
   horse: [
@@ -617,8 +617,8 @@ const PIECE_COLOR = {};
 })();
 
 const TYPE_NAMES = [null,'king','advisor','elephant','horse','chariot','cannon','soldier'];
-const TYPE_VALUES = [0, 10000, 200, 200, 400, 900, 450, 100];
-const TYPE_ATTACK = [0, 1000, 20, 20, 40, 90, 45, 10];
+const TYPE_VALUES = [0, 10000, 200, 200, 400, 1200, 450, 100];
+const TYPE_ATTACK = [0, 1000, 20, 20, 40, 120, 45, 10];
 
 // --- 数值化棋盘 ---
 function boardToNumeric(board) {
@@ -902,6 +902,24 @@ function evaluate(nb) {
 
   if (!aiKingExists) return -100000;
   if (!playerKingExists) return 100000;
+
+  // === 弃车重罚 ===
+  // 统计双方车数，AI少车时重罚
+  let aiChariots = 0, playerChariots = 0;
+  for (let i = 0; i < 90; i++) {
+    const p = nb[i];
+    if (p === 0) continue;
+    const absP = p > 0 ? p : -p;
+    if (absP === 5) {
+      if ((p > 0 ? 1 : -1) === aiSign) aiChariots++;
+      else playerChariots++;
+    }
+  }
+  const chariotDiff = aiChariots - playerChariots;
+  if (chariotDiff < 0) {
+    // 每少一辆车，额外惩罚 400 分（递增：第1辆 -400，第2辆 -1200）
+    score -= 400 * Math.abs(chariotDiff) * (Math.abs(chariotDiff) + 1) / 2;
+  }
 
   // 将军威胁
   const enemyColor = aiColor === 'black' ? 'red' : 'black';
@@ -1425,6 +1443,15 @@ function applyRedAggressionOverride(engineMove) {
     // 只看吃子走法
     if (captured === 0) continue;
 
+    // === 弃车保护：不用车吃低价值棋子（避免被反吃）===
+    const attackerPiece = nb[from];
+    const attackerType = attackerPiece > 0 ? attackerPiece : -attackerPiece;
+    const victimType = captured > 0 ? captured : -captured;
+    if (attackerType === 5 && victimType !== 5 && victimType !== 1) {
+      // 车不吃非车/非将的棋子（避免车换卒/马/炮/象/士）
+      continue;
+    }
+
     // 模拟走法，检查合法性和是否将军
     nb[to] = nb[from];
     nb[from] = 0;
@@ -1434,7 +1461,8 @@ function applyRedAggressionOverride(engineMove) {
       const givesCheck = canCaptureKing(nb, 'red');
       aggressiveMoves.push({
         fromRow: m[0], fromCol: m[1], toRow: m[2], toCol: m[3],
-        capturedType: captured > 0 ? captured : -captured,
+        capturedType: victimType,
+        attackerType: attackerType,
         givesCheck: givesCheck,
       });
     }
