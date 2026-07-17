@@ -1078,7 +1078,7 @@ const DIFFICULTY_CONFIG = {
   2: { name: '初级', depth: 4, time: 500 },
   3: { name: '中级', depth: 5, time: 800 },
   4: { name: '高级', depth: 7, time: 1200 },
-  5: { name: '大师', depth: 9, time: 2000 },
+  5: { name: '大师', depth: 30, time: 180000 },
 };
 
 // --- AI 走法选择（迭代加深） ---
@@ -1445,8 +1445,108 @@ function updateEngineStatus(status) {
   }
 }
 
+// ========== 开局库 ==========
+// 每条记录为一串着法 [fromRow, fromCol, toRow, toCol]
+// 红方先行（索引0,2,4...），黑方后行（索引1,3,5...）
+const OPENING_BOOK = [
+  // 1. 中炮对屏风马（马8进7）
+  [[7,7,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[3,6,4,6]],
+  // 2. 中炮对屏风马（马2进3）
+  [[7,7,7,4],[0,1,2,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[3,2,4,2]],
+  // 3. 中炮对列手炮
+  [[7,7,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  // 4. 中炮对顺炮
+  [[7,7,7,4],[2,1,2,4],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]],
+  // 5. 中炮对反宫马
+  [[7,7,7,4],[0,7,2,6],[9,7,7,6],[3,2,4,2],[9,1,7,2],[0,1,2,2]],
+  // 6. 左中炮对屏风马
+  [[7,1,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6],[9,7,7,6],[3,2,4,2]],
+  // 7. 左中炮对列手炮
+  [[7,1,7,4],[2,1,2,4],[9,1,7,2],[0,7,2,6],[9,7,7,6],[0,1,2,2]],
+  // 8. 仙人指路对卒底炮
+  [[6,6,5,6],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  // 9. 仙人指路对起马
+  [[6,6,5,6],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
+  // 10. 仙人指路对卒3进1
+  [[6,6,5,6],[3,2,4,2],[9,7,7,6],[0,7,2,6],[9,1,7,2],[0,1,2,2]],
+  // 11. 飞相局对中炮（相三进五）
+  [[9,6,7,4],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  // 12. 飞相局对起马（相七进五）
+  [[9,2,7,4],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,1,2,4]],
+  // 13. 起马局对中炮
+  [[9,7,7,6],[2,7,2,4],[7,7,7,4],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  // 14. 起马局对起马
+  [[9,7,7,6],[0,7,2,6],[7,7,7,4],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
+  // 15. 过宫炮对中炮
+  [[7,7,7,3],[2,7,2,4],[9,7,7,6],[0,1,2,2],[9,1,7,2],[0,7,2,6]],
+  // 16. 过宫炮对起马
+  [[7,7,7,3],[0,7,2,6],[9,7,7,6],[0,1,2,2],[9,1,7,2],[2,7,2,4]],
+];
+
+function getOpeningBookMove() {
+  const history = game.moveHistory;
+  // 仅在前6步（每方3步）使用开局库
+  if (history.length >= 6) return null;
+
+  const aiColor = game.currentPlayer;
+  const matching = [];
+
+  for (const opening of OPENING_BOOK) {
+    if (opening.length <= history.length) continue;
+
+    let matches = true;
+    for (let i = 0; i < history.length; i++) {
+      const m = history[i];
+      const o = opening[i];
+      if (m.from.row !== o[0] || m.from.col !== o[1] ||
+          m.to.row !== o[2] || m.to.col !== o[3]) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches) continue;
+
+    // 检查下一手是否属于当前AI方
+    const nextIdx = history.length;
+    const isRedMove = nextIdx % 2 === 0;
+    if ((isRedMove && aiColor === 'red') || (!isRedMove && aiColor === 'black')) {
+      matching.push(opening[nextIdx]);
+    }
+  }
+
+  if (matching.length === 0) return null;
+
+  // 随机选一个
+  const move = matching[Math.floor(Math.random() * matching.length)];
+
+  // 安全检查：目标格子上有自己的棋子则放弃
+  const piece = game.board[move[0]][move[1]];
+  if (!piece) return null;
+  if (PIECE_INFO[piece].color !== aiColor) return null;
+
+  // 检查这步棋是否合法
+  const validMoves = getValidMoves(move[0], move[1]);
+  if (!validMoves.some(m => m.row === move[2] && m.col === move[3])) return null;
+
+  return { fromRow: move[0], fromCol: move[1], toRow: move[2], toCol: move[3] };
+}
+
 function triggerAI() {
   if (game.gameOver || !isAIControlled(game.currentPlayer)) return;
+
+  // 优先使用开局库（前6步随机选择不同开局）
+  const openingMove = getOpeningBookMove();
+  if (openingMove) {
+    const mySearchId = ++currentSearchId;
+    setTimeout(() => {
+      if (mySearchId !== currentSearchId) return;
+      game.aiThinking = false;
+      el.aiThinking.style.display = 'none';
+      el.clickLayer.style.pointerEvents = '';
+      makeMove(openingMove.fromRow, openingMove.fromCol, openingMove.toRow, openingMove.toCol);
+    }, 400);
+    return;
+  }
 
   game.aiThinking = true;
   el.aiThinking.style.display = 'flex';
