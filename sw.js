@@ -1,6 +1,6 @@
 // Service Worker - 只缓存引擎大文件，HTML/CSS/JS走网络
-const CACHE_NAME = 'chinese-chess-engine-v1';
-// 只缓存引擎大文件（49MB的pikafish.data等），HTML/CSS/JS不缓存以确保更新
+const CACHE_NAME = 'chinese-chess-engine-v2';
+// 只缓存引擎大文件（44MB的pikafish.data等），HTML/CSS/JS不缓存以确保更新
 const CACHE_URLS = [
   './engine/pikafish.js',
   './engine/pikafish-worker.js',

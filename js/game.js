@@ -872,10 +872,11 @@ function evaluate(nb) {
       else playerKingExists = true;
     }
 
-    // 子力价值 + 位置分（位置表已包含基础价值）
+    // 子力基础价值 + 位置加分
     const pieceType = TYPE_NAMES[absP];
     const table = POSITION_TABLES[pieceType];
-    let val = table ? table[sign > 0 ? r : 9 - r][c] : TYPE_VALUES[absP];
+    const posBonus = table ? table[sign > 0 ? r : 9 - r][c] : 0;
+    let val = TYPE_VALUES[absP] + posBonus;
 
     // 兵卒过河额外加成
     if (absP === 7) {
@@ -930,6 +931,18 @@ function evaluate(nb) {
   if (redAggression && canCaptureKing(nb, enemyColor)) {
     score += 150; // 红方将军额外奖励
   }
+
+  // 车数量惩罚：每少一辆车额外扣分（防止随意弃车）
+  let aiChariots = 0, playerChariots = 0;
+  for (let i = 0; i < 90; i++) {
+    if (nb[i] === 5 || nb[i] === -5) {
+      if ((nb[i] > 0 ? 1 : -1) === aiSign) aiChariots++;
+      else playerChariots++;
+    }
+  }
+  // 每少一辆车相对对方扣 150 分（车太重要，弃车需要非常大的补偿）
+  if (aiChariots < 2) score -= (2 - aiChariots) * 150;
+  if (playerChariots < 2) score += (2 - playerChariots) * 150;
 
   return score;
 }
@@ -1572,7 +1585,7 @@ function updateEngineStatus(status) {
     dot.style.boxShadow = '0 0 8px #FF9800';
     dot.style.animation = '';
   } else if (status === 'loading') {
-    textEl.textContent = 'Pikafish 引擎加载中... (约50MB，首次加载需1-3分钟，请耐心等待)';
+    textEl.textContent = 'Pikafish 引擎加载中... (约44MB，首次加载需1-3分钟，请耐心等待)';
     el2.style.background = 'rgba(136, 136, 136, 0.2)';
     el2.style.color = '#aaa';
     el2.style.borderColor = 'rgba(136, 136, 136, 0.4)';
